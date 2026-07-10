@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FlightMap ✈️
 
-## Getting Started
+**Where can you fly non-stop?** Pick any airport and see every direct flight
+route out of it on an interactive night map — plus a static, SEO-friendly page
+for every airport in the network.
 
-First, run the development server:
+Built on open data: [OpenFlights](https://openflights.org/data.php) routes
+(ODbL) and [OurAirports](https://ourairports.com/data/) airport locations
+(public domain). 3,257 airports · 67,663 directed routes.
+
+## What's inside
+
+| Page | What it is |
+|---|---|
+| `/` | Interactive canvas map — search an airport, arcs animate to every non-stop destination |
+| `/airports/` | Every airport ranked by number of direct destinations |
+| `/airports/dus/` | Per-airport page (×3,241): stats, connectivity rank, full destination table |
+
+The world map is drawn from the airport coordinates themselves — no map tiles,
+no external services, fully self-contained.
+
+## Develop
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # prepare-data runs automatically before build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Build & deploy
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build      # static export -> out/
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The build is a **fully static site** (`output: "export"`): deploy the `out/`
+directory to Vercel, Cloudflare Pages, Netlify, or GitHub Pages — no server
+needed. Set `NEXT_PUBLIC_SITE_URL` to your production URL so the sitemap is
+generated with correct absolute links.
 
-## Learn More
+## Data pipeline
 
-To learn more about Next.js, take a look at the following resources:
+`scripts/prepare-data.mjs` parses the raw OpenFlights `.dat` files in `data/`
+into a single `flight-data.json` consumed both by the SSG pages (at build
+time) and the interactive map (fetched client-side). Re-run with
+`npm run prepare-data` after updating the `.dat` files.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+**Data honesty note:** the OpenFlights route snapshot is reliable for *network
+shape* (which airports connect) but its airline/schedule details are dated.
+The site deliberately shows route existence, distances, and connectivity
+stats — not carriers or timetables.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## License
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Code: MIT. Route data: [ODbL](https://opendatacommons.org/licenses/odbl/1-0/)
+(OpenFlights) — derived data in this repo remains under that license.
+Airport data: public domain (OurAirports).

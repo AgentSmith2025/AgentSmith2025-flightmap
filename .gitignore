@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated data (rebuilt by prepare-data)
+/public/flight-data.json
+/data/flight-data.json

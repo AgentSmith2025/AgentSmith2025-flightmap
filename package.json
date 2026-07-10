@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prepare-data": "node scripts/prepare-data.mjs",
+    "prebuild": "node scripts/prepare-data.mjs",
     "build": "next build",
     "start": "next start"
   },
