@@ -223,14 +223,21 @@ h2 {
    Interactive map (home page)
    ========================================================= */
 .stage { position: fixed; inset: 0; overflow: hidden; }
-.stage canvas {
+/* Beats maplibre-gl.css's `.maplibregl-map { position: relative }` which
+   loads later and would otherwise collapse the container to height 0. */
+.stage .mapbox {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  display: block;
-  cursor: crosshair;
+  background: #0a0f1d;
 }
+.maplibregl-ctrl-attrib {
+  background: rgba(10, 15, 29, 0.7) !important;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.maplibregl-ctrl-attrib a { color: var(--ink-faint) !important; }
 
 .panel {
   position: absolute;
@@ -424,7 +431,7 @@ h2 {
 
 .foot {
   position: absolute;
-  bottom: 14px;
+  bottom: 34px;
   right: 18px;
   z-index: 5;
   font-family: var(--mono);

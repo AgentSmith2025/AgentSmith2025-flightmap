@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import maplibregl from "maplibre-gl";
+import type {
+  ExpressionSpecification,
+  GeoJSONSource,
+  StyleSpecification,
+} from "maplibre-gl";
 
 type Airport = { name: string; city: string; country: string; lat: number; lon: number };
 type FlightData = { airports: Record<string, Airport>; adj: Record<string, string[]> };
@@ -23,6 +29,16 @@ type RouteInfo = {
   sel: number;
 } | null;
 
+const BASEMAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+
+// Plain night ground used until tiles arrive, or if the tile CDN is down —
+// the route layers work either way.
+const FALLBACK_STYLE: StyleSpecification = {
+  version: 8,
+  sources: {},
+  layers: [{ id: "bg", type: "background", paint: { "background-color": "#0a0f1d" } }],
+};
+
 function haversineKm(a: Airport, b: Airport): number {
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;
@@ -33,6 +49,34 @@ function haversineKm(a: Airport, b: Airport): number {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+/** Great-circle arc between two airports as [lon,lat] points, antimeridian-safe. */
+function gcArc(a: Airport, b: Airport, steps = 48): [number, number][] {
+  const toR = Math.PI / 180, toD = 180 / Math.PI;
+  const p1 = [a.lat * toR, a.lon * toR], p2 = [b.lat * toR, b.lon * toR];
+  const v1 = [Math.cos(p1[0]) * Math.cos(p1[1]), Math.cos(p1[0]) * Math.sin(p1[1]), Math.sin(p1[0])];
+  const v2 = [Math.cos(p2[0]) * Math.cos(p2[1]), Math.cos(p2[0]) * Math.sin(p2[1]), Math.sin(p2[0])];
+  const dot = Math.min(1, Math.max(-1, v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]));
+  const w = Math.acos(dot);
+  const pts: [number, number][] = [];
+  if (w < 1e-6) return [[a.lon, a.lat], [b.lon, b.lat]];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const s1 = Math.sin((1 - t) * w) / Math.sin(w);
+    const s2 = Math.sin(t * w) / Math.sin(w);
+    const x = s1 * v1[0] + s2 * v2[0];
+    const y = s1 * v1[1] + s2 * v2[1];
+    const z = s1 * v1[2] + s2 * v2[2];
+    pts.push([Math.atan2(y, x) * toD, Math.asin(z / Math.hypot(x, y, z)) * toD]);
+  }
+  // unwrap longitudes so lines don't jump across the antimeridian
+  for (let i = 1; i < pts.length; i++) {
+    let d = pts[i][0] - pts[i - 1][0];
+    if (d > 180) pts[i][0] -= 360;
+    else if (d < -180) pts[i][0] += 360;
+  }
+  return pts;
 }
 
 /** All fewest-hop paths from src to dst (BFS with parent tracking). */
@@ -80,13 +124,16 @@ function shortestPaths(
   return paths;
 }
 
+const fc = (features: GeoJSON.Feature[]): GeoJSON.FeatureCollection => ({
+  type: "FeatureCollection",
+  features,
+});
+
 export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const mapReady = useRef(false);
   const dataRef = useRef<FlightData | null>(null);
-  const selectedRef = useRef<string | null>(null);
-  const routeRef = useRef<{ main: string[]; alts: string[][] } | null>(null);
-  const progRef = useRef(0);
-  const rafRef = useRef(0);
   const reduceRef = useRef(false);
 
   const [readout, setReadout] = useState<Readout | null>(null);
@@ -102,260 +149,151 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
   const [tip, setTip] = useState<{ x: number; y: number; code: string; name: string; routes: number } | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  // ---- drawing ----
-  const draw = useCallback(() => {
-    const cv = canvasRef.current;
+  const setData = (id: string, d: GeoJSON.FeatureCollection) => {
+    const src = mapRef.current?.getSource(id) as GeoJSONSource | undefined;
+    src?.setData(d);
+  };
+
+  const panelPadding = () => {
+    const mobile = typeof window !== "undefined" && window.innerWidth < 720;
+    return mobile
+      ? { top: 60, bottom: 240, left: 40, right: 40 }
+      : { top: 90, bottom: 90, left: 430, right: 90 };
+  };
+
+  // ---- explore mode: fan out all direct routes from an origin ----
+  const select = useCallback((code: string) => {
     const data = dataRef.current;
-    if (!cv || !data) return;
-    const ctx = cv.getContext("2d");
-    if (!ctx) return;
-    const W = cv.clientWidth;
-    const H = cv.clientHeight;
-    const px = (lon: number) => ((lon + 180) / 360) * W;
-    const py = (lat: number) => ((90 - lat) / 180) * H;
+    const map = mapRef.current;
+    if (!data || !map || !mapReady.current || !data.adj[code]) return;
 
-    ctx.clearRect(0, 0, W, H);
+    setRoute(null);
+    setNoRoute(null);
 
-    ctx.strokeStyle = "rgba(120,150,200,.06)";
-    ctx.lineWidth = 1;
-    for (let g = -150; g <= 150; g += 30) {
-      const x = px(g);
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-    for (let l = -60; l <= 60; l += 30) {
-      const y = py(l);
-      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-    }
+    const o = data.airports[code];
+    const dests = data.adj[code] ?? [];
+    const countries = new Set<string>();
+    let far: Airport | null = null;
+    let farKm = 0;
 
-    const { airports, adj } = data;
-    const selected = selectedRef.current;
-    const routeSel = routeRef.current;
-    const prog = progRef.current;
-    const dim = selected || routeSel ? 0.55 : 1;
-
-    ctx.fillStyle = `rgba(120,150,200,${0.34 * dim})`;
-    for (const code in airports) {
-      const a = airports[code];
-      ctx.fillRect(px(a.lon) - 0.6, py(a.lat) - 0.6, 1.4, 1.4);
-    }
-
-    const arc = (
-      ox: number, oy: number, dx: number, dy: number,
-      alpha: number, width: number, warm: boolean,
-    ) => {
-      const mx = (ox + dx) / 2, my = (oy + dy) / 2;
-      const d = Math.hypot(dx - ox, dy - oy);
-      const nx = -(dy - oy), ny = dx - ox;
-      const nl = Math.hypot(nx, ny) || 1;
-      const lift = Math.min(d * 0.22, 90);
-      const cx = mx + (nx / nl) * lift;
-      const cy = my + (ny / nl) * lift - d * 0.05;
-      const grad = ctx.createLinearGradient(ox, oy, dx, dy);
-      if (warm) {
-        grad.addColorStop(0, `rgba(79,227,255,${0.85 * alpha})`);
-        grad.addColorStop(0.5, `rgba(255,207,107,${0.9 * alpha})`);
-        grad.addColorStop(1, `rgba(255,138,61,${0.75 * alpha})`);
-      } else {
-        grad.addColorStop(0, `rgba(79,227,255,${0.5 * alpha})`);
-        grad.addColorStop(0.5, `rgba(255,207,107,${0.55 * alpha})`);
-        grad.addColorStop(1, `rgba(255,138,61,${0.28 * alpha})`);
-      }
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = width;
-      ctx.beginPath();
-      ctx.moveTo(ox, oy);
-      const steps = 18;
-      for (let t = 0; t <= steps; t++) {
-        const tt = (t / steps) * alpha;
-        const x = (1 - tt) * (1 - tt) * ox + 2 * (1 - tt) * tt * cx + tt * tt * dx;
-        const y = (1 - tt) * (1 - tt) * oy + 2 * (1 - tt) * tt * cy + tt * tt * dy;
-        ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    };
-
-    const node = (code: string, r: number, fill: string) => {
-      const a = airports[code];
-      if (!a) return;
-      ctx.beginPath();
-      ctx.fillStyle = fill;
-      ctx.arc(px(a.lon), py(a.lat), r, 0, 7);
-      ctx.fill();
-    };
-
-    if (routeSel) {
-      // alternative paths, faint
-      for (const alt of routeSel.alts) {
-        for (let i = 0; i < alt.length - 1; i++) {
-          const a = airports[alt[i]], b = airports[alt[i + 1]];
-          if (!a || !b) continue;
-          arc(px(a.lon), py(a.lat), px(b.lon), py(b.lat), 0.18, 1, false);
-        }
-      }
-      // main path, staged leg by leg
-      const legs = routeSel.main.length - 1;
-      for (let i = 0; i < legs; i++) {
-        const a = airports[routeSel.main[i]], b = airports[routeSel.main[i + 1]];
-        if (!a || !b) continue;
-        const appear = Math.min(1, Math.max(0, prog * legs - i));
-        if (appear <= 0) continue;
-        arc(px(a.lon), py(a.lat), px(b.lon), py(b.lat), appear, 2, true);
-      }
-      // nodes
-      routeSel.main.forEach((c, i) => {
-        const isEnd = i === 0 || i === routeSel.main.length - 1;
-        node(c, isEnd ? 4 : 3, isEnd ? "#4fe3ff" : "#ffcf6b");
+    const arcFeatures: GeoJSON.Feature[] = [];
+    const destFeatures: GeoJSON.Feature[] = [];
+    for (const d of dests) {
+      const dd = data.airports[d];
+      if (!dd) continue;
+      countries.add(dd.country);
+      const km = haversineKm(o, dd);
+      if (km > farKm) { farKm = km; far = dd; }
+      arcFeatures.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "LineString", coordinates: gcArc(o, dd) },
       });
-    } else if (selected && airports[selected]) {
-      const o = airports[selected];
-      const ox = px(o.lon), oy = py(o.lat);
-      const dests = adj[selected] ?? [];
-
-      dests.forEach((d, j) => {
-        const dd = airports[d];
-        if (!dd) return;
-        const appear = Math.min(1, Math.max(0, (prog * dests.length - j) / 6));
-        if (appear <= 0) return;
-        arc(ox, oy, px(dd.lon), py(dd.lat), appear, 1, false);
+      destFeatures.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: "Point", coordinates: [dd.lon, dd.lat] },
       });
-
-      dests.forEach((d, k) => {
-        const dd = airports[d];
-        if (!dd) return;
-        const pk = Math.min(1, Math.max(0, (prog * dests.length - k) / 6));
-        if (pk <= 0) return;
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(255,180,90,${0.9 * pk})`;
-        ctx.arc(px(dd.lon), py(dd.lat), 1.9, 0, 7);
-        ctx.fill();
-      });
-
-      const pr = reduceRef.current ? 3.4 : 3.2 + Math.sin(Date.now() / 380) * 1.1;
-      ctx.beginPath();
-      ctx.fillStyle = "rgba(79,227,255,.16)";
-      ctx.arc(ox, oy, pr * 3.4, 0, 7);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.fillStyle = "#4fe3ff";
-      ctx.arc(ox, oy, pr, 0, 7);
-      ctx.fill();
     }
+
+    setData("fan-arcs", fc(arcFeatures));
+    setData("dest-dots", fc(destFeatures));
+    setData("route-main", fc([]));
+    setData("route-alts", fc([]));
+    setData("route-stops", fc([]));
+    setData("origin-dot", fc([{
+      type: "Feature",
+      properties: {},
+      geometry: { type: "Point", coordinates: [o.lon, o.lat] },
+    }]));
+
+    map.flyTo({
+      center: [o.lon, o.lat],
+      zoom: Math.max(map.getZoom(), 2.4),
+      animate: !reduceRef.current,
+    });
+
+    setReadout({
+      code,
+      name: o.name,
+      sub: (o.city ? o.city + ", " : "") + o.country,
+      dests: dests.length,
+      countries: countries.size,
+      furthest: far ? { name: far.name, country: far.country, km: Math.round(farKm) } : null,
+    });
   }, []);
 
-  const loopPulse = useCallback(() => {
-    if (reduceRef.current) return;
-    cancelAnimationFrame(rafRef.current);
-    const p = () => {
-      if (!selectedRef.current && !routeRef.current) return;
-      draw();
-      rafRef.current = requestAnimationFrame(p);
-    };
-    rafRef.current = requestAnimationFrame(p);
-  }, [draw]);
+  // ---- A -> B route mode ----
+  const drawRoutePaths = useCallback((paths: RoutePath[], sel: number) => {
+    const data = dataRef.current;
+    const map = mapRef.current;
+    if (!data || !map) return;
+    const apt = (c: string) => data.airports[c];
 
-  const animate = useCallback(() => {
-    if (reduceRef.current) {
-      progRef.current = 1;
-      draw();
+    const line = (codes: string[]): GeoJSON.Feature => {
+      const coords: [number, number][] = [];
+      for (let i = 0; i < codes.length - 1; i++) {
+        const seg = gcArc(apt(codes[i]), apt(codes[i + 1]));
+        coords.push(...(i === 0 ? seg : seg.slice(1)));
+      }
+      return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
+    };
+
+    const main = paths[sel];
+    setData("route-main", fc([line(main.codes)]));
+    setData("route-alts", fc(paths.filter((_, i) => i !== sel).map((p) => line(p.codes))));
+    setData("route-stops", fc(main.codes.map((c, i) => ({
+      type: "Feature",
+      properties: { end: i === 0 || i === main.codes.length - 1 ? 1 : 0 },
+      geometry: { type: "Point", coordinates: [apt(c).lon, apt(c).lat] },
+    }))));
+    setData("fan-arcs", fc([]));
+    setData("dest-dots", fc([]));
+    setData("origin-dot", fc([]));
+
+    const b = new maplibregl.LngLatBounds();
+    for (const c of main.codes) b.extend([apt(c).lon, apt(c).lat]);
+    map.fitBounds(b, { padding: panelPadding(), animate: !reduceRef.current, maxZoom: 6 });
+  }, []);
+
+  const computeRoute = useCallback((from: string, to: string) => {
+    const data = dataRef.current;
+    if (!data || !mapReady.current) return;
+    const raw = shortestPaths(from, to, data.adj);
+    setReadout(null);
+
+    if (!raw || raw.length === 0) {
+      setRoute(null);
+      setNoRoute({ from, to });
+      setData("route-main", fc([]));
+      setData("route-alts", fc([]));
+      setData("route-stops", fc([]));
+      setData("fan-arcs", fc([]));
+      setData("dest-dots", fc([]));
       return;
     }
-    cancelAnimationFrame(rafRef.current);
-    const start = performance.now();
-    const step = (now: number) => {
-      progRef.current = Math.min(1, (now - start) / 900);
-      draw();
-      if (progRef.current < 1) rafRef.current = requestAnimationFrame(step);
-      else loopPulse();
-    };
-    rafRef.current = requestAnimationFrame(step);
-  }, [draw, loopPulse]);
 
-  // ---- single-origin explore mode ----
-  const select = useCallback(
-    (code: string) => {
-      const data = dataRef.current;
-      if (!data || !data.adj[code]) return;
-      selectedRef.current = code;
-      routeRef.current = null;
-      progRef.current = 0;
-      setRoute(null);
-      setNoRoute(null);
+    const scored: RoutePath[] = raw
+      .map((codes) => {
+        let km = 0;
+        for (let i = 0; i < codes.length - 1; i++) {
+          const a = data.airports[codes[i]], b = data.airports[codes[i + 1]];
+          if (a && b) km += haversineKm(a, b);
+        }
+        return { codes, km: Math.round(km) };
+      })
+      .sort((a, b) => a.km - b.km)
+      .slice(0, 5);
 
-      const o = data.airports[code];
-      const dests = data.adj[code] ?? [];
-      const countries = new Set<string>();
-      let far: Airport | null = null;
-      let farKm = 0;
-      for (const d of dests) {
-        const dd = data.airports[d];
-        if (!dd) continue;
-        countries.add(dd.country);
-        const km = haversineKm(o, dd);
-        if (km > farKm) { farKm = km; far = dd; }
-      }
-      setReadout({
-        code,
-        name: o.name,
-        sub: (o.city ? o.city + ", " : "") + o.country,
-        dests: dests.length,
-        countries: countries.size,
-        furthest: far ? { name: far.name, country: far.country, km: Math.round(farKm) } : null,
-      });
-      animate();
-    },
-    [animate],
-  );
-
-  // ---- A -> B route mode ----
-  const computeRoute = useCallback(
-    (from: string, to: string) => {
-      const data = dataRef.current;
-      if (!data) return;
-      const raw = shortestPaths(from, to, data.adj);
-      selectedRef.current = null;
-      setReadout(null);
-
-      if (!raw || raw.length === 0) {
-        routeRef.current = null;
-        setRoute(null);
-        setNoRoute({ from, to });
-        draw();
-        return;
-      }
-
-      const scored: RoutePath[] = raw
-        .map((codes) => {
-          let km = 0;
-          for (let i = 0; i < codes.length - 1; i++) {
-            const a = data.airports[codes[i]], b = data.airports[codes[i + 1]];
-            if (a && b) km += haversineKm(a, b);
-          }
-          return { codes, km: Math.round(km) };
-        })
-        .sort((a, b) => a.km - b.km)
-        .slice(0, 5);
-
-      setNoRoute(null);
-      setRoute({ from, to, paths: scored, sel: 0 });
-      routeRef.current = {
-        main: scored[0].codes,
-        alts: scored.slice(1).map((p) => p.codes),
-      };
-      progRef.current = 0;
-      animate();
-    },
-    [animate, draw],
-  );
+    setNoRoute(null);
+    setRoute({ from, to, paths: scored, sel: 0 });
+    drawRoutePaths(scored, 0);
+  }, [drawRoutePaths]);
 
   const selectRouteOption = (idx: number) => {
     setRoute((r) => {
       if (!r) return r;
-      routeRef.current = {
-        main: r.paths[idx].codes,
-        alts: r.paths.filter((_, i) => i !== idx).map((p) => p.codes),
-      };
-      progRef.current = 0;
-      animate();
+      drawRoutePaths(r.paths, idx);
       return { ...r, sel: idx };
     });
   };
@@ -372,28 +310,24 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     else if (f) select(f);
   }, [computeRoute, select]);
 
-  const pick = useCallback(
-    (code: string, which: "from" | "to") => {
-      if (which === "from") {
-        fromCode.current = code;
-        setFromQ(label(code));
-      } else {
-        toCode.current = code;
-        setToQ(label(code));
-      }
-      setHits(null);
-      setActIdx(-1);
-      applySelection();
-    },
-    [applySelection],
-  );
+  const pick = useCallback((code: string, which: "from" | "to") => {
+    if (which === "from") {
+      fromCode.current = code;
+      setFromQ(label(code));
+    } else {
+      toCode.current = code;
+      setToQ(label(code));
+    }
+    setHits(null);
+    setActIdx(-1);
+    applySelection();
+  }, [applySelection]);
 
   const clearTo = () => {
     toCode.current = null;
     setToQ("");
     setRoute(null);
     setNoRoute(null);
-    routeRef.current = null;
     if (fromCode.current) select(fromCode.current);
   };
 
@@ -407,53 +341,181 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     applySelection();
   };
 
-  // ---- boot ----
+  // ---- boot: map + data ----
   useEffect(() => {
     reduceRef.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!containerRef.current) return;
 
-    const resize = () => {
-      const cv = canvasRef.current;
-      if (!cv) return;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      cv.width = cv.clientWidth * dpr;
-      cv.height = cv.clientHeight * dpr;
-      const ctx = cv.getContext("2d");
-      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      draw();
-    };
-
+    let map: maplibregl.Map | null = null;
     let alive = true;
-    fetch("/flight-data.json")
-      .then((r) => r.json())
-      .then((d: FlightData) => {
-        if (!alive) return;
-        dataRef.current = d;
-        setLoaded(true);
-        resize();
-        // Deep links: /?from=DUS&to=VLC preselects a route.
-        const qs = new URLSearchParams(window.location.search);
-        const qFrom = (qs.get("from") ?? "").toUpperCase();
-        const qTo = (qs.get("to") ?? "").toUpperCase();
-        const start = d.adj[qFrom] ? qFrom : initial;
-        fromCode.current = start;
-        setFromQ(`${d.airports[start]?.name ?? start} (${start})`);
-        if (qTo && d.airports[qTo] && qTo !== start) {
-          toCode.current = qTo;
-          setToQ(`${d.airports[qTo].name} (${qTo})`);
-          computeRoute(start, qTo);
-        } else {
-          select(start);
+
+    const addLayers = () => {
+      const m = map;
+      if (!m) return;
+      const empty = fc([]);
+      const gradient = [
+        "interpolate", ["linear"], ["line-progress"],
+        0, "rgba(79,227,255,.9)",
+        0.5, "rgba(255,207,107,.9)",
+        1, "rgba(255,138,61,.75)",
+      ] as unknown as ExpressionSpecification;
+
+      const data = dataRef.current;
+      if (data && !m.getSource("airports")) {
+        m.addSource("airports", {
+          type: "geojson",
+          data: fc(Object.entries(data.airports).map(([code, a]) => ({
+            type: "Feature",
+            properties: { code, name: a.name, routes: data.adj[code]?.length ?? 0 },
+            geometry: { type: "Point", coordinates: [a.lon, a.lat] },
+          }))),
+        });
+        m.addLayer({
+          id: "airport-dots",
+          source: "airports",
+          type: "circle",
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 1.1, 4, 2.2, 8, 4],
+            "circle-color": "rgba(126,158,208,.55)",
+          },
+        });
+      }
+
+      const geo = (id: string, lineMetrics = false) => {
+        if (!m.getSource(id)) m.addSource(id, { type: "geojson", data: empty, lineMetrics });
+      };
+      geo("fan-arcs", true);
+      geo("route-alts", true);
+      geo("route-main", true);
+      geo("dest-dots");
+      geo("route-stops");
+      geo("origin-dot");
+
+      if (!m.getLayer("fan-arcs-l")) {
+        m.addLayer({
+          id: "fan-arcs-l", source: "fan-arcs", type: "line",
+          paint: { "line-gradient": gradient, "line-width": 1, "line-opacity": 0.55 },
+          layout: { "line-cap": "round" },
+        });
+        m.addLayer({
+          id: "route-alts-l", source: "route-alts", type: "line",
+          paint: { "line-gradient": gradient, "line-width": 1.2, "line-opacity": 0.2 },
+        });
+        m.addLayer({
+          id: "route-main-l", source: "route-main", type: "line",
+          paint: { "line-gradient": gradient, "line-width": 2.6, "line-opacity": 0.95 },
+          layout: { "line-cap": "round" },
+        });
+        m.addLayer({
+          id: "dest-dots-l", source: "dest-dots", type: "circle",
+          paint: { "circle-radius": 2.4, "circle-color": "rgba(255,180,90,.95)" },
+        });
+        m.addLayer({
+          id: "route-stops-l", source: "route-stops", type: "circle",
+          paint: {
+            "circle-radius": ["case", ["==", ["get", "end"], 1], 5, 3.5],
+            "circle-color": ["case", ["==", ["get", "end"], 1], "#4fe3ff", "#ffcf6b"],
+            "circle-stroke-width": 1.5,
+            "circle-stroke-color": "rgba(7,11,22,.8)",
+          },
+        });
+        m.addLayer({
+          id: "origin-halo-l", source: "origin-dot", type: "circle",
+          paint: { "circle-radius": 13, "circle-color": "rgba(79,227,255,.16)" },
+        });
+        m.addLayer({
+          id: "origin-dot-l", source: "origin-dot", type: "circle",
+          paint: { "circle-radius": 4.5, "circle-color": "#4fe3ff" },
+        });
+      }
+
+      // hover + click on airport dots
+      m.on("mousemove", "airport-dots", (e) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        m.getCanvas().style.cursor = "pointer";
+        setTip({
+          x: e.point.x,
+          y: e.point.y,
+          code: f.properties.code as string,
+          name: f.properties.name as string,
+          routes: f.properties.routes as number,
+        });
+      });
+      m.on("mouseleave", "airport-dots", () => {
+        m.getCanvas().style.cursor = "";
+        setTip(null);
+      });
+      m.on("click", "airport-dots", (e) => {
+        const code = e.features?.[0]?.properties.code as string | undefined;
+        if (!code || !dataRef.current) return;
+        if (fromCode.current && !toCode.current && code !== fromCode.current) {
+          pick(code, "to");
+        } else if (dataRef.current.adj[code]) {
+          toCode.current = null;
+          setToQ("");
+          pick(code, "from");
         }
       });
+    };
 
-    window.addEventListener("resize", resize);
-    resize();
+    const boot = () => {
+      if (mapReady.current || !dataRef.current) return;
+      mapReady.current = true;
+      map?.resize();
+      addLayers();
+      const qs = new URLSearchParams(window.location.search);
+      const d = dataRef.current;
+      const qFrom = (qs.get("from") ?? "").toUpperCase();
+      const qTo = (qs.get("to") ?? "").toUpperCase();
+      const start = d.adj[qFrom] ? qFrom : initial;
+      fromCode.current = start;
+      setFromQ(`${d.airports[start]?.name ?? start} (${start})`);
+      if (qTo && d.airports[qTo] && qTo !== start) {
+        toCode.current = qTo;
+        setToQ(`${d.airports[qTo].name} (${qTo})`);
+        computeRoute(start, qTo);
+      } else {
+        select(start);
+      }
+    };
+
+    // Resolve style + data first, then create the map — no load-order races.
+    const styleP: Promise<StyleSpecification | string> = fetch(BASEMAP_STYLE)
+      .then((r) => (r.ok ? (r.json() as Promise<StyleSpecification>) : FALLBACK_STYLE))
+      .catch(() => FALLBACK_STYLE);
+    const dataP = fetch("/flight-data.json").then((r) => r.json() as Promise<FlightData>);
+
+    Promise.all([styleP, dataP]).then(([style, d]) => {
+      if (!alive || !containerRef.current) return;
+      dataRef.current = d;
+      setLoaded(true);
+      map = new maplibregl.Map({
+        container: containerRef.current,
+        style,
+        center: [12, 38],
+        zoom: 1.8,
+        minZoom: 1,
+        maxZoom: 11,
+      });
+      mapRef.current = map;
+      (window as unknown as { __map?: maplibregl.Map }).__map = map;
+      map.on("load", boot);
+      // Container can be measured before styles settle — track its real size.
+      ro = new ResizeObserver(() => mapRef.current?.resize());
+      ro.observe(containerRef.current);
+    });
+
+    let ro: ResizeObserver | null = null;
     return () => {
       alive = false;
-      window.removeEventListener("resize", resize);
-      cancelAnimationFrame(rafRef.current);
+      ro?.disconnect();
+      map?.remove();
+      mapRef.current = null;
+      mapReady.current = false;
     };
-  }, [draw, select, computeRoute, initial]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- search ----
   const search = (term: string, which: "from" | "to") => {
@@ -463,7 +525,6 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     const t = term.trim().toLowerCase();
     if (!data || !t) { setHits(null); return; }
     const scored: [number, string][] = [];
-    // From must have departures; To can be any airport in the network.
     const pool = which === "from" ? Object.keys(data.adj) : Object.keys(data.airports);
     for (const code of pool) {
       const a = data.airports[code];
@@ -497,57 +558,6 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     else if (e.key === "Escape") setHits(null);
   };
 
-  // ---- canvas hover/click ----
-  const nearest = (mx: number, my: number): string | null => {
-    const data = dataRef.current;
-    const cv = canvasRef.current;
-    if (!data || !cv) return null;
-    const W = cv.clientWidth, H = cv.clientHeight;
-    let best: string | null = null, bd = Infinity;
-    for (const code in data.airports) {
-      const a = data.airports[code];
-      const dx = ((a.lon + 180) / 360) * W - mx;
-      const dy = ((90 - a.lat) / 180) * H - my;
-      const d = dx * dx + dy * dy;
-      if (d < bd) { bd = d; best = code; }
-    }
-    return bd < 80 ? best : null;
-  };
-
-  const onMove = (e: React.MouseEvent) => {
-    const cv = canvasRef.current;
-    const data = dataRef.current;
-    if (!cv || !data) return;
-    const r = cv.getBoundingClientRect();
-    const code = nearest(e.clientX - r.left, e.clientY - r.top);
-    if (code) {
-      const a = data.airports[code];
-      setTip({
-        x: ((a.lon + 180) / 360) * cv.clientWidth,
-        y: ((90 - a.lat) / 180) * cv.clientHeight,
-        code,
-        name: a.name,
-        routes: data.adj[code]?.length ?? 0,
-      });
-    } else setTip(null);
-  };
-
-  const onClick = (e: React.MouseEvent) => {
-    const cv = canvasRef.current;
-    if (!cv) return;
-    const r = cv.getBoundingClientRect();
-    const code = nearest(e.clientX - r.left, e.clientY - r.top);
-    if (!code) return;
-    // First click (or restart) sets origin; second click sets destination.
-    if (fromCode.current && !toCode.current && code !== fromCode.current) {
-      pick(code, "to");
-    } else {
-      toCode.current = null;
-      setToQ("");
-      if (dataRef.current?.adj[code]) pick(code, "from");
-    }
-  };
-
   const surprise = () => {
     const data = dataRef.current;
     if (!data) return;
@@ -574,13 +584,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
   return (
     <div className="stage">
-      <canvas
-        ref={canvasRef}
-        onMouseMove={onMove}
-        onMouseLeave={() => setTip(null)}
-        onClick={onClick}
-        aria-label="World map of airports and direct flight routes"
-      />
+      <div ref={containerRef} className="mapbox" aria-label="World map of airports and direct flight routes" />
 
       {tip && (
         <div className="tip" style={{ left: tip.x, top: tip.y }}>
@@ -768,9 +772,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       </div>
 
       <div className="foot">
-        <Link href="/airports/">all airports</Link> · data: OpenFlights + OurAirports
-        <br />
-        free · open data · no map tiles
+        <Link href="/airports/">all airports</Link> · routes: OpenFlights + OurAirports
       </div>
     </div>
   );
