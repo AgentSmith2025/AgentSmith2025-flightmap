@@ -3,7 +3,7 @@ import { getData, getRoutePairs } from "@/lib/data";
 
 export const dynamic = "force-static";
 
-const BASE = process.env.NEXT_PUBLIC_SITE_URL ?? "https://flightmap.example.com";
+const BASE = process.env.NEXT_PUBLIC_SITE_URL ?? "https://travelintel.pages.dev";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const { adj } = getData();

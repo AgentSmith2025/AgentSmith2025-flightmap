@@ -96,7 +96,7 @@ yes to sites with visitors, not to ideas).
 
 ## Current status
 
-- **Live:** https://agentsmith2025-flightmap.pages.dev (Cloudflare Pages,
+- **Live:** https://travelintel.pages.dev (Cloudflare Pages,
   auto-deploys from `main`)
 - **Stage:** 1 complete, 1.5 starting
 - **Stack:** Next.js 16 static export · open data pipeline in

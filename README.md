@@ -1,4 +1,4 @@
-# FlightMap ✈️
+# TravelIntel ✈️
 
 **Where can you fly non-stop?** Pick any airport and see every direct flight
 route out of it on an interactive night map — plus a static, SEO-friendly page

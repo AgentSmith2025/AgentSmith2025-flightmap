@@ -14,11 +14,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "FlightMap — where can you fly non-stop?",
-    template: "%s · FlightMap",
+    default: "TravelIntel — where can you fly non-stop?",
+    template: "%s · TravelIntel",
   },
   description:
-    "Pick any airport and see every direct flight route out of it on an interactive night map. 3,000+ airports, 67,000+ routes, built on open flight data.",
+    "Pick any airport and see every direct flight route out of it on an interactive night map. 3,000+ airports, 37,000+ routes, built on open flight data.",
 };
 
 export default function RootLayout({
