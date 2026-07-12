@@ -1,5 +1,5 @@
 import type { MetadataRoute } from "next";
-import { getData } from "@/lib/data";
+import { getData, getRoutePairs } from "@/lib/data";
 
 export const dynamic = "force-static";
 
@@ -13,6 +13,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...Object.keys(adj).map((code) => ({
       url: `${BASE}/airports/${code.toLowerCase()}/`,
       priority: 0.6,
+    })),
+    ...getRoutePairs().map((pair) => ({
+      url: `${BASE}/routes/${pair.toLowerCase()}/`,
+      priority: 0.5,
     })),
   ];
 }

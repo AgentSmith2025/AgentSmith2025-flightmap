@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getAirportStats, getData, getOrigins } from "@/lib/data";
+import {
+  getAirportStats,
+  getData,
+  getOrigins,
+  hasRoutePage,
+  routeSlug,
+} from "@/lib/data";
 
 type Params = { code: string };
 
@@ -106,7 +112,15 @@ export default async function AirportPage({
                   {d.airport.city ? ` · ${d.airport.city}` : ""}
                 </td>
                 <td>{d.airport.country}</td>
-                <td className="num">{d.km.toLocaleString("en-US")} km</td>
+                <td className="num">
+                  {hasRoutePage(stats.code, d.code) ? (
+                    <Link href={`/routes/${routeSlug(stats.code, d.code)}/`}>
+                      {d.km.toLocaleString("en-US")} km
+                    </Link>
+                  ) : (
+                    `${d.km.toLocaleString("en-US")} km`
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

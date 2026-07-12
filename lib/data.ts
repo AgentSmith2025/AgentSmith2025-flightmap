@@ -79,3 +79,71 @@ export function getOrigins(): { code: string; airport: Airport; routes: number }
     .map(([code, dests]) => ({ code, airport: airports[code], routes: dests.length }))
     .sort((a, b) => b.routes - a.routes);
 }
+
+// Route pages exist only for pairs where both airports have at least this
+// many routes — keeps the static export well under Cloudflare Pages'
+// 20,000-file deployment limit while covering every route people search for.
+const ROUTE_PAGE_MIN_DEGREE = 5;
+
+function routeDegree(code: string): number {
+  return getData().adj[code]?.length ?? 0;
+}
+
+/** True if a canonical route page exists for this (unordered) airport pair. */
+export function hasRoutePage(x: string, y: string): boolean {
+  const { adj } = getData();
+  const direct = (adj[x]?.includes(y) ?? false) || (adj[y]?.includes(x) ?? false);
+  return (
+    direct &&
+    Math.min(routeDegree(x), routeDegree(y)) >= ROUTE_PAGE_MIN_DEGREE
+  );
+}
+
+/** Canonical slug for a pair, e.g. "dus-vlc" (alphabetical). */
+export function routeSlug(x: string, y: string): string {
+  const [a, b] = [x, y].sort();
+  return `${a}-${b}`.toLowerCase();
+}
+
+/** All canonical route-page slugs (uppercase "AAA-BBB" form). */
+export function getRoutePairs(): string[] {
+  const { adj } = getData();
+  const pairs = new Set<string>();
+  for (const [src, dests] of Object.entries(adj)) {
+    for (const dst of dests) {
+      if (Math.min(routeDegree(src), routeDegree(dst)) >= ROUTE_PAGE_MIN_DEGREE) {
+        const [a, b] = [src, dst].sort();
+        pairs.add(`${a}-${b}`);
+      }
+    }
+  }
+  return [...pairs];
+}
+
+export type RouteDetails = {
+  a: string;
+  b: string;
+  A: Airport;
+  B: Airport;
+  abDirect: boolean;
+  baDirect: boolean;
+  km: number;
+};
+
+export function getRouteDetails(a: string, b: string): RouteDetails | null {
+  const { airports, adj } = getData();
+  const A = airports[a], B = airports[b];
+  if (!A || !B) return null;
+  const abDirect = adj[a]?.includes(b) ?? false;
+  const baDirect = adj[b]?.includes(a) ?? false;
+  if (!abDirect && !baDirect) return null;
+  return { a, b, A, B, abDirect, baDirect, km: Math.round(haversineKm(A, B)) };
+}
+
+/** Rough block-time estimate for a flight of the given distance. */
+export function estFlightTime(km: number): string {
+  const hours = km / 840 + 0.45;
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return m === 60 ? `${h + 1} h 00 m` : `${h} h ${String(m).padStart(2, "0")} m`;
+}

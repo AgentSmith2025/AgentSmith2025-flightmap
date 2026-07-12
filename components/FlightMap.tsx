@@ -430,9 +430,20 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         dataRef.current = d;
         setLoaded(true);
         resize();
-        fromCode.current = initial;
-        setFromQ(`${d.airports[initial]?.name ?? initial} (${initial})`);
-        select(initial);
+        // Deep links: /?from=DUS&to=VLC preselects a route.
+        const qs = new URLSearchParams(window.location.search);
+        const qFrom = (qs.get("from") ?? "").toUpperCase();
+        const qTo = (qs.get("to") ?? "").toUpperCase();
+        const start = d.adj[qFrom] ? qFrom : initial;
+        fromCode.current = start;
+        setFromQ(`${d.airports[start]?.name ?? start} (${start})`);
+        if (qTo && d.airports[qTo] && qTo !== start) {
+          toCode.current = qTo;
+          setToQ(`${d.airports[qTo].name} (${qTo})`);
+          computeRoute(start, qTo);
+        } else {
+          select(start);
+        }
       });
 
     window.addEventListener("resize", resize);
@@ -442,7 +453,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       window.removeEventListener("resize", resize);
       cancelAnimationFrame(rafRef.current);
     };
-  }, [draw, select, initial]);
+  }, [draw, select, computeRoute, initial]);
 
   // ---- search ----
   const search = (term: string, which: "from" | "to") => {
