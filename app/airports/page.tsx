@@ -15,6 +15,9 @@ export default function AirportsIndex() {
 
   return (
     <main className="shell">
+      <p className="wordmark-row">
+        <Link className="wordmark" href="/">TravelIntel</Link>
+      </p>
       <nav className="crumbs">
         <Link href="/">← map</Link> / airports
       </nav>

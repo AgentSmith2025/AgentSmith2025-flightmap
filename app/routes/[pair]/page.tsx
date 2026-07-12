@@ -74,6 +74,9 @@ export default async function RoutePage({
 
   return (
     <main className="shell">
+      <p className="wordmark-row">
+        <Link className="wordmark" href="/">TravelIntel</Link>
+      </p>
       <nav className="crumbs">
         <Link href="/">← map</Link> / <Link href="/airports/">airports</Link> /{" "}
         {r.a}–{r.b}

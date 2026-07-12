@@ -590,7 +590,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       )}
 
       <div className="panel hud">
-        <p className="eyebrow">Flight route explorer</p>
+        <p className="eyebrow"><span className="wordmark">TravelIntel</span></p>
         <h1>
           Where can you fly <span className="accent">non-stop?</span>
         </h1>
