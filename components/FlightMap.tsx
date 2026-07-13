@@ -751,7 +751,10 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
   };
 
   const data = dataRef.current;
-  const fmtPath = (codes: string[]) => codes.join(" → ");
+  const cityOf = (c: string) => {
+    const a = dataRef.current?.airports[c];
+    return a?.city || a?.name || c;
+  };
 
   return (
     <div className="stage">
@@ -909,6 +912,9 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         {noRoute && (
           <>
             <p className="origin-name">
+              {cityOf(noRoute.from)} → {cityOf(noRoute.to)}
+            </p>
+            <p className="origin-sub">
               {noRoute.from} → {noRoute.to}
             </p>
             <p className="far">
@@ -920,12 +926,13 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         {route && (
           <>
             <p className="origin-name">
-              {route.from} → {route.to}
+              {cityOf(route.from)} → {cityOf(route.to)}
             </p>
             <p className="origin-sub">
+              {route.from} → {route.to} ·{" "}
               {route.paths[route.sel].codes.length === 2
-                ? "Non-stop connection"
-                : `Best: ${route.paths[route.sel].codes.length - 2} stop${route.paths[route.sel].codes.length > 3 ? "s" : ""} · ${route.paths.length} option${route.paths.length > 1 ? "s" : ""} shown`}
+                ? "non-stop"
+                : `best: ${route.paths[route.sel].codes.length - 2} stop${route.paths[route.sel].codes.length > 3 ? "s" : ""} · ${route.paths.length} option${route.paths.length > 1 ? "s" : ""}`}
             </p>
             <div className="stats">
               <div className="stat hi">
@@ -944,8 +951,18 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
                   className={`ropt${i === route.sel ? " sel" : ""}`}
                   onClick={() => selectRouteOption(i)}
                 >
-                  <span className="path">{fmtPath(p.codes)}</span>
-                  <span className="km">{p.km.toLocaleString("en-US")} km</span>
+                  <span className="path">
+                    {p.codes.map((c, j) => (
+                      <span key={c + j}>
+                        {j > 0 && <span className="sep"> → </span>}
+                        {cityOf(c)}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="meta">
+                    <span className="codes">{p.codes.join("–")}</span>
+                    <span className="km">{p.km.toLocaleString("en-US")} km</span>
+                  </span>
                 </div>
               ))}
             </div>
