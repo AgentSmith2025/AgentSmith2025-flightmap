@@ -29,15 +29,39 @@ type RouteInfo = {
   sel: number;
 } | null;
 
-const BASEMAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+type ThemeName = "night" | "day";
 
-// Plain night ground used until tiles arrive, or if the tile CDN is down —
-// the route layers work either way.
-const FALLBACK_STYLE: StyleSpecification = {
+const THEMES = {
+  night: {
+    style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+    ground: "#0a0f1d",
+    dots: "rgba(126,158,208,.55)",
+    dest: "rgba(255,180,90,.95)",
+    origin: "#4fe3ff",
+    halo: "rgba(79,227,255,.16)",
+    stop: "#ffcf6b",
+    stopStroke: "rgba(7,11,22,.8)",
+    grad: ["rgba(79,227,255,.9)", "rgba(255,207,107,.9)", "rgba(255,138,61,.75)"],
+  },
+  day: {
+    style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+    ground: "#dfe6ee",
+    dots: "rgba(71,94,128,.5)",
+    dest: "rgba(217,88,18,.9)",
+    origin: "#0284c7",
+    halo: "rgba(2,132,199,.15)",
+    stop: "#d97706",
+    stopStroke: "rgba(255,255,255,.9)",
+    grad: ["rgba(2,132,199,.9)", "rgba(202,110,10,.9)", "rgba(234,88,12,.85)"],
+  },
+} as const;
+
+// Plain ground used if the tile CDN is unreachable — routes render either way.
+const fallbackStyle = (ground: string): StyleSpecification => ({
   version: 8,
   sources: {},
-  layers: [{ id: "bg", type: "background", paint: { "background-color": "#0a0f1d" } }],
-};
+  layers: [{ id: "bg", type: "background", paint: { "background-color": ground } }],
+});
 
 function haversineKm(a: Airport, b: Airport): number {
   const R = 6371;
@@ -135,6 +159,78 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
   const mapReady = useRef(false);
   const dataRef = useRef<FlightData | null>(null);
   const reduceRef = useRef(false);
+  const [theme, setTheme] = useState<ThemeName>("night");
+  const themeRef = useRef<ThemeName>("night");
+  const styleCache = useRef<Partial<Record<ThemeName, StyleSpecification>>>({});
+  const addLayersRef = useRef<() => void>(() => {});
+  const planeRef = useRef<{ marker: maplibregl.Marker | null; raf: number }>({
+    marker: null,
+    raf: 0,
+  });
+
+  const stopPlane = useCallback(() => {
+    cancelAnimationFrame(planeRef.current.raf);
+    planeRef.current.marker?.remove();
+    planeRef.current.marker = null;
+  }, []);
+
+  /** Fly a small plane along the given arc coordinates, looping. */
+  const startPlane = useCallback((coords: [number, number][]) => {
+    stopPlane();
+    const map = mapRef.current;
+    if (!map || reduceRef.current || coords.length < 2) return;
+
+    // cumulative distance for constant ground speed
+    const cum = [0];
+    for (let i = 1; i < coords.length; i++) {
+      const a = { lat: coords[i - 1][1], lon: coords[i - 1][0] } as Airport;
+      const b = { lat: coords[i][1], lon: coords[i][0] } as Airport;
+      cum.push(cum[i - 1] + haversineKm(a, b));
+    }
+    const total = cum[cum.length - 1];
+    if (total < 10) return;
+    const dur = Math.min(9000, Math.max(3500, total / 2));
+    const pause = 900;
+
+    const el = document.createElement("div");
+    el.className = "plane-marker";
+    el.innerHTML =
+      '<div class="plane-inner"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" style="display:block"><path d="M21.5 15.5 13.5 11V4.75a1.5 1.5 0 0 0-3 0V11l-8 4.5v2l8-2.25V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13.5 19v-3.75l8 2.25z"/></svg></div>';
+    const inner = el.firstChild as HTMLDivElement;
+    const marker = new maplibregl.Marker({ element: el })
+      .setLngLat(coords[0])
+      .addTo(map);
+    planeRef.current.marker = marker;
+
+    const at = (dist: number): [number, number] => {
+      let i = 1;
+      while (i < cum.length - 1 && cum[i] < dist) i++;
+      const seg = cum[i] - cum[i - 1] || 1;
+      const f = Math.min(1, Math.max(0, (dist - cum[i - 1]) / seg));
+      return [
+        coords[i - 1][0] + (coords[i][0] - coords[i - 1][0]) * f,
+        coords[i - 1][1] + (coords[i][1] - coords[i - 1][1]) * f,
+      ];
+    };
+
+    const start = performance.now();
+    const frame = (now: number) => {
+      const m = mapRef.current;
+      if (!m || !planeRef.current.marker) return;
+      const e = (now - start) % (dur + pause);
+      const t = Math.min(1, e / dur);
+      inner.style.opacity = e <= dur ? "1" : "0";
+      const pos = at(t * total);
+      marker.setLngLat(pos);
+      const ahead = at(Math.min(total, t * total + Math.max(20, total / 200)));
+      const p1 = m.project(pos);
+      const p2 = m.project(ahead);
+      const ang = (Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180) / Math.PI;
+      inner.style.transform = `rotate(${ang + 90}deg)`;
+      planeRef.current.raf = requestAnimationFrame(frame);
+    };
+    planeRef.current.raf = requestAnimationFrame(frame);
+  }, [stopPlane]);
 
   const [readout, setReadout] = useState<Readout | null>(null);
   const [route, setRoute] = useState<RouteInfo>(null);
@@ -167,6 +263,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     const map = mapRef.current;
     if (!data || !map || !mapReady.current || !data.adj[code]) return;
 
+    stopPlane();
     setRoute(null);
     setNoRoute(null);
 
@@ -221,7 +318,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       countries: countries.size,
       furthest: far ? { name: far.name, country: far.country, km: Math.round(farKm) } : null,
     });
-  }, []);
+  }, [stopPlane]);
 
   // ---- A -> B route mode ----
   const drawRoutePaths = useCallback((paths: RoutePath[], sel: number) => {
@@ -230,17 +327,27 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     if (!data || !map) return;
     const apt = (c: string) => data.airports[c];
 
-    const line = (codes: string[]): GeoJSON.Feature => {
+    const lineCoords = (codes: string[]): [number, number][] => {
       const coords: [number, number][] = [];
       for (let i = 0; i < codes.length - 1; i++) {
         const seg = gcArc(apt(codes[i]), apt(codes[i + 1]));
         coords.push(...(i === 0 ? seg : seg.slice(1)));
       }
-      return { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } };
+      return coords;
     };
+    const line = (codes: string[]): GeoJSON.Feature => ({
+      type: "Feature",
+      properties: {},
+      geometry: { type: "LineString", coordinates: lineCoords(codes) },
+    });
 
     const main = paths[sel];
-    setData("route-main", fc([line(main.codes)]));
+    const mainCoords = lineCoords(main.codes);
+    setData("route-main", fc([{
+      type: "Feature",
+      properties: {},
+      geometry: { type: "LineString", coordinates: mainCoords },
+    }]));
     setData("route-alts", fc(paths.filter((_, i) => i !== sel).map((p) => line(p.codes))));
     setData("route-stops", fc(main.codes.map((c, i) => ({
       type: "Feature",
@@ -254,7 +361,9 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     const b = new maplibregl.LngLatBounds();
     for (const c of main.codes) b.extend([apt(c).lon, apt(c).lat]);
     map.fitBounds(b, { padding: panelPadding(), animate: !reduceRef.current, maxZoom: 6 });
-  }, []);
+
+    startPlane(mainCoords);
+  }, [startPlane]);
 
   const computeRoute = useCallback((from: string, to: string) => {
     const data = dataRef.current;
@@ -263,6 +372,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     setReadout(null);
 
     if (!raw || raw.length === 0) {
+      stopPlane();
       setRoute(null);
       setNoRoute({ from, to });
       setData("route-main", fc([]));
@@ -288,7 +398,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     setNoRoute(null);
     setRoute({ from, to, paths: scored, sel: 0 });
     drawRoutePaths(scored, 0);
-  }, [drawRoutePaths]);
+  }, [drawRoutePaths, stopPlane]);
 
   const selectRouteOption = (idx: number) => {
     setRoute((r) => {
@@ -341,6 +451,53 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     applySelection();
   };
 
+  // ---- theme ----
+  const getStyle = useCallback(async (t: ThemeName): Promise<StyleSpecification> => {
+    const cached = styleCache.current[t];
+    if (cached) return cached;
+    try {
+      const r = await fetch(THEMES[t].style);
+      if (r.ok) {
+        const j = (await r.json()) as StyleSpecification;
+        styleCache.current[t] = j;
+        return j;
+      }
+    } catch {
+      /* tile CDN unreachable — use the plain ground */
+    }
+    return fallbackStyle(THEMES[t].ground);
+  }, []);
+
+  const applyTheme = useCallback(
+    async (t: ThemeName) => {
+      themeRef.current = t;
+      setTheme(t);
+      if (t === "day") document.documentElement.dataset.theme = "day";
+      else delete document.documentElement.dataset.theme;
+      try {
+        localStorage.setItem("ti-theme", t);
+      } catch {
+        /* private mode */
+      }
+      const map = mapRef.current;
+      if (!map || !mapReady.current) return;
+      stopPlane();
+      const style = await getStyle(t);
+      map.setStyle(style);
+      // setStyle wipes our sources/layers — re-add once the new style is in.
+      const readd = () => {
+        if (!map.isStyleLoaded()) {
+          map.once("idle", readd);
+          return;
+        }
+        addLayersRef.current();
+        applySelection();
+      };
+      map.once("styledata", readd);
+    },
+    [getStyle, stopPlane, applySelection],
+  );
+
   // ---- boot: map + data ----
   useEffect(() => {
     reduceRef.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -348,16 +505,18 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
     let map: maplibregl.Map | null = null;
     let alive = true;
+    let handlersAttached = false;
 
     const addLayers = () => {
       const m = map;
       if (!m) return;
+      const T = THEMES[themeRef.current];
       const empty = fc([]);
       const gradient = [
         "interpolate", ["linear"], ["line-progress"],
-        0, "rgba(79,227,255,.9)",
-        0.5, "rgba(255,207,107,.9)",
-        1, "rgba(255,138,61,.75)",
+        0, T.grad[0],
+        0.5, T.grad[1],
+        1, T.grad[2],
       ] as unknown as ExpressionSpecification;
 
       const data = dataRef.current;
@@ -376,7 +535,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
           type: "circle",
           paint: {
             "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 1.1, 4, 2.2, 8, 4],
-            "circle-color": "rgba(126,158,208,.55)",
+            "circle-color": T.dots,
           },
         });
       }
@@ -408,28 +567,30 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         });
         m.addLayer({
           id: "dest-dots-l", source: "dest-dots", type: "circle",
-          paint: { "circle-radius": 2.4, "circle-color": "rgba(255,180,90,.95)" },
+          paint: { "circle-radius": 2.4, "circle-color": T.dest },
         });
         m.addLayer({
           id: "route-stops-l", source: "route-stops", type: "circle",
           paint: {
             "circle-radius": ["case", ["==", ["get", "end"], 1], 5, 3.5],
-            "circle-color": ["case", ["==", ["get", "end"], 1], "#4fe3ff", "#ffcf6b"],
+            "circle-color": ["case", ["==", ["get", "end"], 1], T.origin, T.stop],
             "circle-stroke-width": 1.5,
-            "circle-stroke-color": "rgba(7,11,22,.8)",
+            "circle-stroke-color": T.stopStroke,
           },
         });
         m.addLayer({
           id: "origin-halo-l", source: "origin-dot", type: "circle",
-          paint: { "circle-radius": 13, "circle-color": "rgba(79,227,255,.16)" },
+          paint: { "circle-radius": 13, "circle-color": T.halo },
         });
         m.addLayer({
           id: "origin-dot-l", source: "origin-dot", type: "circle",
-          paint: { "circle-radius": 4.5, "circle-color": "#4fe3ff" },
+          paint: { "circle-radius": 4.5, "circle-color": T.origin },
         });
       }
 
-      // hover + click on airport dots
+      // hover + click on airport dots (bind once — they survive setStyle)
+      if (handlersAttached) return;
+      handlersAttached = true;
       m.on("mousemove", "airport-dots", (e) => {
         const f = e.features?.[0];
         if (!f) return;
@@ -480,10 +641,16 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       }
     };
 
+    addLayersRef.current = addLayers;
+
+    // Theme was stamped on <html> by the inline script before hydration.
+    const initTheme: ThemeName =
+      document.documentElement.dataset.theme === "day" ? "day" : "night";
+    themeRef.current = initTheme;
+    setTheme(initTheme);
+
     // Resolve style + data first, then create the map — no load-order races.
-    const styleP: Promise<StyleSpecification | string> = fetch(BASEMAP_STYLE)
-      .then((r) => (r.ok ? (r.json() as Promise<StyleSpecification>) : FALLBACK_STYLE))
-      .catch(() => FALLBACK_STYLE);
+    const styleP = getStyle(initTheme);
     const dataP = fetch("/flight-data.json").then((r) => r.json() as Promise<FlightData>);
 
     Promise.all([styleP, dataP]).then(([style, d]) => {
@@ -510,6 +677,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     return () => {
       alive = false;
       ro?.disconnect();
+      stopPlane();
       map?.remove();
       mapRef.current = null;
       mapReady.current = false;
@@ -695,6 +863,13 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         <div className="actions">
           <button className="btn" onClick={surprise}>✦ Surprise me</button>
           <button className="btn" onClick={biggestHub}>◎ Biggest hub</button>
+          <button
+            className="btn"
+            onClick={() => applyTheme(theme === "night" ? "day" : "night")}
+            aria-label={theme === "night" ? "Switch to day theme" : "Switch to night theme"}
+          >
+            {theme === "night" ? "☀ Day" : "☾ Night"}
+          </button>
         </div>
       </div>
 
