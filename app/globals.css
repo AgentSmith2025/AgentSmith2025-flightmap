@@ -353,6 +353,7 @@ h2 {
 .hit:hover, .hit.active { background: rgba(79, 227, 255, 0.1); }
 .hit .code { font-family: var(--mono); font-size: 13px; color: var(--origin); font-weight: 600; min-width: 34px; }
 .hit .nm { font-size: 13px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hit .nm .loc { color: var(--ink-faint); }
 .hit .cc { margin-left: auto; font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
 
 .actions { display: flex; gap: 8px; margin-top: 12px; }

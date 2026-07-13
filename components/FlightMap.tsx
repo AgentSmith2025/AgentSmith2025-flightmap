@@ -532,13 +532,16 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       const c = code.toLowerCase();
       const city = (a.city || "").toLowerCase();
       const name = (a.name || "").toLowerCase();
+      const country = (a.country || "").toLowerCase();
       let s = 99;
       if (c === t) s = 0;
       else if (c.startsWith(t)) s = 1;
       else if (city.startsWith(t)) s = 2;
       else if (name.startsWith(t)) s = 3;
-      else if (city.includes(t)) s = 4;
-      else if (name.includes(t)) s = 5;
+      else if (country === t) s = 4;           // exact country -> list its airports
+      else if (city.includes(t)) s = 5;
+      else if (name.includes(t)) s = 6;
+      else if (country.startsWith(t)) s = 7;   // partial country name
       if (s < 99) scored.push([s, code]);
     }
     scored.sort(
@@ -546,7 +549,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         x[0] - y[0] ||
         (dataRef.current!.adj[y[1]]?.length ?? 0) - (dataRef.current!.adj[x[1]]?.length ?? 0),
     );
-    setHits({ which, codes: scored.slice(0, 8).map((h) => h[1]) });
+    setHits({ which, codes: scored.slice(0, 10).map((h) => h[1]) });
     setActIdx(-1);
   };
 
@@ -631,7 +634,11 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
                   <span className="code">{c}</span>
                   <span className="nm">
                     {data.airports[c].name}
-                    {data.airports[c].city ? ` · ${data.airports[c].city}` : ""}
+                    <span className="loc">
+                      {" · "}
+                      {data.airports[c].city ? `${data.airports[c].city}, ` : ""}
+                      {data.airports[c].country}
+                    </span>
                   </span>
                   <span className="cc">{data.adj[c]?.length ?? 0} routes</span>
                 </div>
@@ -672,7 +679,11 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
                   <span className="code">{c}</span>
                   <span className="nm">
                     {data.airports[c].name}
-                    {data.airports[c].city ? ` · ${data.airports[c].city}` : ""}
+                    <span className="loc">
+                      {" · "}
+                      {data.airports[c].city ? `${data.airports[c].city}, ` : ""}
+                      {data.airports[c].country}
+                    </span>
                   </span>
                   <span className="cc">{data.adj[c]?.length ?? 0} routes</span>
                 </div>
