@@ -49,7 +49,7 @@ export default function RootLayout({
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{if(localStorage.getItem('ti-theme')==='day')document.documentElement.dataset.theme='day'}catch(e){}",
+              "try{if(localStorage.getItem('ti-theme')==='night')document.documentElement.dataset.theme='night'}catch(e){}",
           }}
         />
         {children}

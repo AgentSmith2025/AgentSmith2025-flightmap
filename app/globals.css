@@ -1,5 +1,31 @@
 :root {
-  /* Night flight-map — the default world */
+  /* Day flight-map — cool paper sky (default) */
+  --bg: #e9eef5;
+  --bg-2: #dfe6ee;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-solid: #ffffff;
+  --panel-brd: rgba(30, 50, 90, 0.14);
+  --field: #f0f4f9;
+  --field-brd: rgba(30, 50, 90, 0.18);
+  --hover: rgba(2, 132, 199, 0.08);
+  --focus-ring: rgba(2, 132, 199, 0.18);
+  --ink: #16233a;
+  --ink-dim: #4e5f7a;
+  --ink-faint: #8593a9;
+  --origin: #0284c7;
+  --arc-a: #b45309;
+  --arc-b: #ea580c;
+  --map-ground: #dfe6ee;
+  --page-bg:
+    radial-gradient(1200px 700px at 68% -10%, #ffffff 0%, transparent 55%),
+    #e9eef5;
+  --shadow: 0 18px 50px -12px rgba(30, 50, 90, 0.22);
+  --mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+:root[data-theme="night"] {
+  /* Night flight-map */
   --bg: #070b16;
   --bg-2: #0b1222;
   --panel: rgba(13, 20, 36, 0.82);
@@ -21,32 +47,6 @@
     radial-gradient(900px 600px at 8% 110%, #0e1830 0%, transparent 50%),
     #070b16;
   --shadow: 0 18px 50px -12px rgba(0, 0, 0, 0.7);
-  --mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-}
-
-:root[data-theme="day"] {
-  /* Day flight-map — cool paper sky */
-  --bg: #e9eef5;
-  --bg-2: #dfe6ee;
-  --panel: rgba(255, 255, 255, 0.88);
-  --panel-solid: #ffffff;
-  --panel-brd: rgba(30, 50, 90, 0.14);
-  --field: #f0f4f9;
-  --field-brd: rgba(30, 50, 90, 0.18);
-  --hover: rgba(2, 132, 199, 0.08);
-  --focus-ring: rgba(2, 132, 199, 0.18);
-  --ink: #16233a;
-  --ink-dim: #4e5f7a;
-  --ink-faint: #8593a9;
-  --origin: #0284c7;
-  --arc-a: #b45309;
-  --arc-b: #ea580c;
-  --map-ground: #dfe6ee;
-  --page-bg:
-    radial-gradient(1200px 700px at 68% -10%, #ffffff 0%, transparent 55%),
-    #e9eef5;
-  --shadow: 0 18px 50px -12px rgba(30, 50, 90, 0.22);
 }
 
 * { box-sizing: border-box; }
@@ -79,8 +79,13 @@ a:hover { text-decoration: underline; }
 }
 a.wordmark:hover { text-decoration: none; filter: brightness(1.2); }
 .wordmark-row { margin: 0 0 22px; }
-:root[data-theme="day"] .wordmark {
+.wordmark {
   background: linear-gradient(90deg, #0369a1 0%, #c2610c 70%, #ea580c 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+:root[data-theme="night"] .wordmark {
+  background: linear-gradient(90deg, #4fe3ff 0%, #ffcf6b 70%, #ff8a3d 100%);
   -webkit-background-clip: text;
   background-clip: text;
 }

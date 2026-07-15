@@ -159,8 +159,8 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
   const mapReady = useRef(false);
   const dataRef = useRef<FlightData | null>(null);
   const reduceRef = useRef(false);
-  const [theme, setTheme] = useState<ThemeName>("night");
-  const themeRef = useRef<ThemeName>("night");
+  const [theme, setTheme] = useState<ThemeName>("day");
+  const themeRef = useRef<ThemeName>("day");
   const styleCache = useRef<Partial<Record<ThemeName, StyleSpecification>>>({});
   const addLayersRef = useRef<() => void>(() => {});
   const planeRef = useRef<{ marker: maplibregl.Marker | null; raf: number }>({
@@ -472,7 +472,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     async (t: ThemeName) => {
       themeRef.current = t;
       setTheme(t);
-      if (t === "day") document.documentElement.dataset.theme = "day";
+      if (t === "night") document.documentElement.dataset.theme = "night";
       else delete document.documentElement.dataset.theme;
       try {
         localStorage.setItem("ti-theme", t);
@@ -534,8 +534,19 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
           source: "airports",
           type: "circle",
           paint: {
-            "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 1.1, 4, 2.2, 8, 4],
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 1.4, 4, 2.6, 8, 4.5],
             "circle-color": T.dots,
+          },
+        });
+        // Generous invisible hit area so airports are easy to click.
+        m.addLayer({
+          id: "airport-hit",
+          source: "airports",
+          type: "circle",
+          paint: {
+            "circle-radius": ["interpolate", ["linear"], ["zoom"], 1, 7, 4, 10, 8, 14],
+            "circle-color": "#000",
+            "circle-opacity": 0.001,
           },
         });
       }
@@ -591,7 +602,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       // hover + click on airport dots (bind once — they survive setStyle)
       if (handlersAttached) return;
       handlersAttached = true;
-      m.on("mousemove", "airport-dots", (e) => {
+      m.on("mousemove", "airport-hit", (e) => {
         const f = e.features?.[0];
         if (!f) return;
         m.getCanvas().style.cursor = "pointer";
@@ -603,11 +614,11 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
           routes: f.properties.routes as number,
         });
       });
-      m.on("mouseleave", "airport-dots", () => {
+      m.on("mouseleave", "airport-hit", () => {
         m.getCanvas().style.cursor = "";
         setTip(null);
       });
-      m.on("click", "airport-dots", (e) => {
+      m.on("click", "airport-hit", (e) => {
         const code = e.features?.[0]?.properties.code as string | undefined;
         if (!code || !dataRef.current) return;
         if (fromCode.current && !toCode.current && code !== fromCode.current) {
@@ -645,7 +656,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
     // Theme was stamped on <html> by the inline script before hydration.
     const initTheme: ThemeName =
-      document.documentElement.dataset.theme === "day" ? "day" : "night";
+      document.documentElement.dataset.theme === "night" ? "night" : "day";
     themeRef.current = initTheme;
     setTheme(initTheme);
 
