@@ -885,6 +885,9 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
             {theme === "night" ? "☀ Day" : "☾ Night"}
           </button>
         </div>
+        <Link className="dailylink" href="/daily/">
+          ✈ Play today’s Daily Hop puzzle →
+        </Link>
       </div>
 
       {/* ---- explore readout ---- */}

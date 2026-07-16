@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "prepare-data": "node scripts/prepare-data.mjs",
-    "build": "node scripts/prepare-data.mjs && next build && node scripts/prune-rsc.mjs",
+    "build": "node scripts/prepare-data.mjs && node scripts/gen-puzzles.mjs && next build && node scripts/prune-rsc.mjs",
     "start": "next start"
   },
   "dependencies": {
