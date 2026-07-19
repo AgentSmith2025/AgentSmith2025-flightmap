@@ -41,6 +41,7 @@ const THEMES = {
     halo: "rgba(79,227,255,.16)",
     stop: "#ffcf6b",
     stopStroke: "rgba(7,11,22,.8)",
+    drive: "#34d399",
     grad: ["rgba(79,227,255,.9)", "rgba(255,207,107,.9)", "rgba(255,138,61,.75)"],
   },
   day: {
@@ -52,9 +53,25 @@ const THEMES = {
     halo: "rgba(2,132,199,.15)",
     stop: "#d97706",
     stopStroke: "rgba(255,255,255,.9)",
+    drive: "#059669",
     grad: ["rgba(2,132,199,.9)", "rgba(202,110,10,.9)", "rgba(234,88,12,.85)"],
   },
 } as const;
+
+const OSRM = "https://router.project-osrm.org/route/v1/driving";
+const DRIVE_MAX_KM = 3500; // beyond this, don't even ask for a road route
+
+type DriveInfo = {
+  km: number;
+  hours: number;
+  stop: { city: string; country: string } | null;
+};
+
+const fmtH = (hours: number) => {
+  const h = Math.floor(hours);
+  const m = Math.round((hours - h) * 60);
+  return `${h} h ${String(m).padStart(2, "0")} m`;
+};
 
 // Plain ground used if the tile CDN is unreachable — routes render either way.
 const fallbackStyle = (ground: string): StyleSpecification => ({
@@ -235,6 +252,63 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
   const [readout, setReadout] = useState<Readout | null>(null);
   const [route, setRoute] = useState<RouteInfo>(null);
   const [noRoute, setNoRoute] = useState<{ from: string; to: string } | null>(null);
+  const [drive, setDrive] = useState<DriveInfo | null>(null);
+  const driveSeq = useRef(0);
+
+  const clearDrive = useCallback(() => {
+    driveSeq.current++;
+    setDrive(null);
+    const src = mapRef.current?.getSource("drive-line") as GeoJSONSource | undefined;
+    src?.setData({ type: "FeatureCollection", features: [] });
+  }, []);
+
+  /** Fetch the driving alternative from OSRM and suggest an overnight stop. */
+  const fetchDrive = useCallback(async (from: string, to: string) => {
+    const data = dataRef.current;
+    if (!data) return;
+    const A = data.airports[from], B = data.airports[to];
+    if (!A || !B) return;
+    clearDrive();
+    if (haversineKm(A, B) > DRIVE_MAX_KM) return;
+    const seq = driveSeq.current;
+    try {
+      const url = `${OSRM}/${A.lon},${A.lat};${B.lon},${B.lat}?overview=full&geometries=geojson`;
+      const r = await fetch(url);
+      if (!r.ok) return;
+      const j = await r.json();
+      const routeR = j?.routes?.[0];
+      if (seq !== driveSeq.current || !routeR?.geometry?.coordinates?.length) return;
+
+      const km = Math.round(routeR.distance / 1000);
+      const hours = routeR.duration / 3600;
+      const coords: [number, number][] = routeR.geometry.coordinates;
+
+      // Overnight stop: the point halfway along the drive, named after the
+      // nearest known airport city within 150 km.
+      let stop: DriveInfo["stop"] = null;
+      if (hours > 8) {
+        const mid = coords[Math.floor(coords.length / 2)];
+        const midA = { lat: mid[1], lon: mid[0] } as Airport;
+        let best: Airport | null = null, bd = 150;
+        for (const code in data.airports) {
+          const ap = data.airports[code];
+          if (!ap.city) continue;
+          const dKm = haversineKm(midA, ap);
+          if (dKm < bd) { bd = dKm; best = ap; }
+        }
+        if (best) stop = { city: best.city, country: best.country };
+      }
+
+      setDrive({ km, hours, stop });
+      const src = mapRef.current?.getSource("drive-line") as GeoJSONSource | undefined;
+      src?.setData({
+        type: "FeatureCollection",
+        features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }],
+      });
+    } catch {
+      /* routing service unreachable — flight-only view stays */
+    }
+  }, [clearDrive]);
 
   const [fromQ, setFromQ] = useState("");
   const [toQ, setToQ] = useState("");
@@ -264,6 +338,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     if (!data || !map || !mapReady.current || !data.adj[code]) return;
 
     stopPlane();
+    clearDrive();
     setRoute(null);
     setNoRoute(null);
 
@@ -318,7 +393,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       countries: countries.size,
       furthest: far ? { name: far.name, country: far.country, km: Math.round(farKm) } : null,
     });
-  }, [stopPlane]);
+  }, [stopPlane, clearDrive]);
 
   // ---- A -> B route mode ----
   const drawRoutePaths = useCallback((paths: RoutePath[], sel: number) => {
@@ -373,6 +448,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
     if (!raw || raw.length === 0) {
       stopPlane();
+      clearDrive();
       setRoute(null);
       setNoRoute({ from, to });
       setData("route-main", fc([]));
@@ -398,7 +474,8 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
     setNoRoute(null);
     setRoute({ from, to, paths: scored, sel: 0 });
     drawRoutePaths(scored, 0);
-  }, [drawRoutePaths, stopPlane]);
+    fetchDrive(from, to);
+  }, [drawRoutePaths, stopPlane, clearDrive, fetchDrive]);
 
   const selectRouteOption = (idx: number) => {
     setRoute((r) => {
@@ -560,8 +637,18 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
       geo("dest-dots");
       geo("route-stops");
       geo("origin-dot");
+      geo("drive-line");
 
       if (!m.getLayer("fan-arcs-l")) {
+        m.addLayer({
+          id: "drive-line-l", source: "drive-line", type: "line",
+          paint: {
+            "line-color": T.drive,
+            "line-width": 2,
+            "line-opacity": 0.85,
+            "line-dasharray": [2, 1.6],
+          },
+        });
         m.addLayer({
           id: "fan-arcs-l", source: "fan-arcs", type: "line",
           paint: { "line-gradient": gradient, "line-width": 1, "line-opacity": 0.55 },
@@ -980,9 +1067,41 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
                 </div>
               ))}
             </div>
+            {drive && (
+              <div className="compare">
+                <div className="cmp-row">
+                  <span className="cmp-ic">✈</span>
+                  <span className="cmp-name">Fly</span>
+                  <span className="cmp-val">
+                    ≈ {fmtH(route.paths[route.sel].km / 840 + 0.45 + (route.paths[route.sel].codes.length - 2) * 1.5)}
+                    {" · "}{route.paths[route.sel].km.toLocaleString("en-US")} km
+                  </span>
+                </div>
+                <div className="cmp-row drive">
+                  <span className="cmp-ic">🚗</span>
+                  <span className="cmp-name">Drive</span>
+                  <span className="cmp-val">
+                    ≈ {fmtH(drive.hours)} · {drive.km.toLocaleString("en-US")} km
+                  </span>
+                </div>
+                {drive.stop && (
+                  <p className="cmp-stop">
+                    Driving {fmtH(drive.hours)} in one go is rough — consider an
+                    overnight stop around <b>{drive.stop.city}</b> ({drive.stop.country}).{" "}
+                    <a
+                      href={`https://www.booking.com/searchresults.html?ss=${encodeURIComponent(drive.stop.city)}`}
+                      target="_blank" rel="noopener nofollow"
+                    >
+                      Hotels in {drive.stop.city} →
+                    </a>
+                  </p>
+                )}
+              </div>
+            )}
             <p className="far small">
               Fewest-hop routes from the open route network. Carriers and
               schedules not included — verify times before booking.
+              {drive ? " Driving route © OSRM / OpenStreetMap." : ""}
             </p>
           </>
         )}
