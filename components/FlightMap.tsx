@@ -381,7 +381,9 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
     map.flyTo({
       center: [o.lon, o.lat],
-      zoom: Math.max(map.getZoom(), 2.4),
+      zoom: Math.max(map.getZoom(), 2.7),
+      duration: 1600,
+      essential: false,
       animate: !reduceRef.current,
     });
 
@@ -435,7 +437,13 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
     const b = new maplibregl.LngLatBounds();
     for (const c of main.codes) b.extend([apt(c).lon, apt(c).lat]);
-    map.fitBounds(b, { padding: panelPadding(), animate: !reduceRef.current, maxZoom: 6 });
+    // cinematic sweep: ease out to frame the whole journey
+    map.fitBounds(b, {
+      padding: panelPadding(),
+      animate: !reduceRef.current,
+      maxZoom: 6.5,
+      duration: 1500,
+    });
 
     startPlane(mainCoords);
   }, [startPlane]);
@@ -875,8 +883,11 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
           to find the best connections.
         </p>
 
+        <div className="fieldstack">
+        <button className="swapfab" onClick={swap} aria-label="Swap origin and destination">⇅</button>
         <div className="searchwrap">
           <div className="search">
+            <span className="slot-ic ic-from" aria-hidden="true" />
             <span className="slot-label">From</span>
             <input
               type="text"
@@ -918,6 +929,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
 
         <div className="searchwrap towrap">
           <div className="search">
+            <span className="slot-ic ic-to" aria-hidden="true" />
             <span className="slot-label">To</span>
             <input
               type="text"
@@ -933,7 +945,6 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
             {toQ && (
               <button className="mini" onClick={clearTo} aria-label="Clear destination">✕</button>
             )}
-            <button className="mini" onClick={swap} aria-label="Swap origin and destination">⇅</button>
           </div>
           {hits && hits.which === "to" && hits.codes.length > 0 && data && (
             <div className="results" role="listbox">
@@ -959,6 +970,7 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
               ))}
             </div>
           )}
+        </div>
         </div>
 
         <div className="actions">
@@ -1026,24 +1038,25 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
         )}
         {route && (
           <>
-            <p className="origin-name">
-              {cityOf(route.from)} → {cityOf(route.to)}
-            </p>
-            <p className="origin-sub">
-              {route.from} → {route.to} ·{" "}
-              {route.paths[route.sel].codes.length === 2
-                ? "non-stop"
-                : `best: ${route.paths[route.sel].codes.length - 2} stop${route.paths[route.sel].codes.length > 3 ? "s" : ""} · ${route.paths.length} option${route.paths.length > 1 ? "s" : ""}`}
-            </p>
-            <div className="stats">
-              <div className="stat hi">
-                <div className="k">{route.paths[route.sel].codes.length - 1}</div>
-                <div className="l">flight{route.paths[route.sel].codes.length > 2 ? "s" : ""}</div>
-              </div>
-              <div className="stat">
-                <div className="k">{route.paths[route.sel].km.toLocaleString("en-US")}</div>
-                <div className="l">total km (great-circle)</div>
-              </div>
+            <div className="jc-head">
+              <p className="origin-name">
+                {cityOf(route.from)} <span className="jc-arrow">→</span> {cityOf(route.to)}
+              </p>
+              <p className="origin-sub">
+                {route.from} → {route.to} ·{" "}
+                {route.paths[route.sel].codes.length === 2
+                  ? "non-stop"
+                  : `best: ${route.paths[route.sel].codes.length - 2} stop${route.paths[route.sel].codes.length > 3 ? "s" : ""} · ${route.paths.length} option${route.paths.length > 1 ? "s" : ""}`}
+              </p>
+            </div>
+            <div className="chips">
+              <span className="chip hi">
+                ✈ {route.paths[route.sel].codes.length - 1} flight{route.paths[route.sel].codes.length > 2 ? "s" : ""}
+              </span>
+              <span className="chip">{route.paths[route.sel].km.toLocaleString("en-US")} km</span>
+              <span className="chip">
+                ≈ {fmtH(route.paths[route.sel].km / 840 + 0.45 + (route.paths[route.sel].codes.length - 2) * 1.5)}
+              </span>
             </div>
             <div className="ropts">
               {route.paths.map((p, i) => (
@@ -1069,32 +1082,35 @@ export default function FlightMap({ initial = "DUS" }: { initial?: string }) {
             </div>
             {drive && (
               <div className="compare">
-                <div className="cmp-row">
-                  <span className="cmp-ic">✈</span>
-                  <span className="cmp-name">Fly</span>
-                  <span className="cmp-val">
-                    ≈ {fmtH(route.paths[route.sel].km / 840 + 0.45 + (route.paths[route.sel].codes.length - 2) * 1.5)}
-                    {" · "}{route.paths[route.sel].km.toLocaleString("en-US")} km
-                  </span>
-                </div>
-                <div className="cmp-row drive">
-                  <span className="cmp-ic">🚗</span>
-                  <span className="cmp-name">Drive</span>
-                  <span className="cmp-val">
-                    ≈ {fmtH(drive.hours)} · {drive.km.toLocaleString("en-US")} km
-                  </span>
+                <div className="modecards">
+                  <div className="modecard fly">
+                    <span className="mc-ic">✈</span>
+                    <b>{fmtH(route.paths[route.sel].km / 840 + 0.45 + (route.paths[route.sel].codes.length - 2) * 1.5)}</b>
+                    <small>{route.paths[route.sel].km.toLocaleString("en-US")} km · fly</small>
+                  </div>
+                  <div className="modecard drive">
+                    <span className="mc-ic">🚗</span>
+                    <b>{fmtH(drive.hours)}</b>
+                    <small>{drive.km.toLocaleString("en-US")} km · drive</small>
+                  </div>
                 </div>
                 {drive.stop && (
-                  <p className="cmp-stop">
-                    Driving {fmtH(drive.hours)} in one go is rough — consider an
-                    overnight stop around <b>{drive.stop.city}</b> ({drive.stop.country}).{" "}
-                    <a
-                      href={`https://www.booking.com/searchresults.html?ss=${encodeURIComponent(drive.stop.city)}`}
-                      target="_blank" rel="noopener nofollow"
-                    >
-                      Hotels in {drive.stop.city} →
-                    </a>
-                  </p>
+                  <div className="callout">
+                    <span className="co-ic">🛏</span>
+                    <div className="co-body">
+                      <p>
+                        {fmtH(drive.hours)} behind the wheel is rough — break the trip
+                        around <b>{drive.stop.city}</b> ({drive.stop.country}).
+                      </p>
+                      <a
+                        className="linkbtn"
+                        href={`https://www.booking.com/searchresults.html?ss=${encodeURIComponent(drive.stop.city)}`}
+                        target="_blank" rel="noopener nofollow"
+                      >
+                        Hotels in {drive.stop.city} →
+                      </a>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
